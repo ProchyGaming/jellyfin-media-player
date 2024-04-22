@@ -115,9 +115,6 @@ bool PlayerComponent::componentInitialize()
   // Do not let the decoder downmix (better customization for us).
   mpv::qt::set_property(m_mpv, "ad-lavc-downmix", false);
 
-  // Make it load the hwdec interop, so hwdec can be enabled at runtime.
-  mpv::qt::set_property(m_mpv, "hwdec-preload", "auto");
-
   // User-visible application name used by some audio APIs (at least PulseAudio).
   mpv::qt::set_property(m_mpv, "audio-client-name", QCoreApplication::applicationName());
 
@@ -317,6 +314,10 @@ void PlayerComponent::queueMedia(const QString& url, const QVariantMap& options,
   QVariantList command;
   command << "loadfile" << qurl.toString(QUrl::FullyEncoded);
   command << "append-play"; // if nothing is playing, play it now, otherwise just enqueue it
+
+#if MPV_CLIENT_API_VERSION >= MPV_MAKE_VERSION(2, 3)
+  command << -1; // insert_at_idx
+#endif
 
   QVariantMap extraArgs;
 
@@ -524,6 +525,10 @@ void PlayerComponent::handleMpvEvent(mpv_event *event)
           m_playbackCanceled = true;
           break;
         }
+        case MPV_END_FILE_REASON_EOF:
+        case MPV_END_FILE_REASON_QUIT:
+        case MPV_END_FILE_REASON_REDIRECT:
+          break;
       }
 
       if (!m_streamSwitchImminent)
@@ -1062,14 +1067,11 @@ void PlayerComponent::setAudioConfiguration()
 
   updateAudioDevice();
 
-  QString resampleOpts = "";
   bool normalize = SettingsComponent::Get().value(SETTINGS_SECTION_AUDIO, "normalize").toBool();
-  resampleOpts += QString(":normalize=") + (normalize ? "yes" : "no");
+  mpv::qt::set_property(m_mpv, "audio-normalize-downmix", normalize ? "yes" : "no");
 
   // Make downmix more similar to PHT.
-  resampleOpts += ":o=[surround_mix_level=1]";
-
-  mpv::qt::set_property(m_mpv, "af-defaults", "lavrresample" + resampleOpts);
+  mpv::qt::set_property(m_mpv, "audio-swresample-o", "surround_mix_level=1");
 
   m_passthroughCodecs.clear();
 
@@ -1123,7 +1125,7 @@ void PlayerComponent::setAudioConfiguration()
   }
   else
   {
-    mpv::qt::command(m_mpv, QStringList() << "af" << "del" << "@ac3");
+    mpv::qt::command(m_mpv, QStringList() << "af" << "remove" << "@ac3");
   }
 
   QVariant device = SettingsComponent::Get().value(SETTINGS_SECTION_AUDIO, "device");
@@ -1223,7 +1225,7 @@ void PlayerComponent::updateVideoAspectSettings()
   }
 
   mpv::qt::set_property(m_mpv, "video-unscaled", disableScaling);
-  mpv::qt::set_property(m_mpv, "video-aspect", forceAspect);
+  mpv::qt::set_property(m_mpv, "video-aspect-override", forceAspect);
   mpv::qt::set_property(m_mpv, "keepaspect", keepAspect);
   mpv::qt::set_property(m_mpv, "panscan", panScan);
 }
@@ -1239,7 +1241,7 @@ void PlayerComponent::updateVideoSettings()
 
   QString hardwareDecodingMode = SettingsComponent::Get().value(SETTINGS_SECTION_VIDEO, "hardwareDecoding").toString();
   QString hwdecMode = "no";
-  QString hwdecVTFormat = "nv12";
+  QString hwdecVTFormat = "no";
   if (hardwareDecodingMode == "enabled")
     hwdecMode = "auto";
   else if (hardwareDecodingMode == "osx_compat")
@@ -1252,20 +1254,20 @@ void PlayerComponent::updateVideoSettings()
     hwdecMode = "auto-copy";
   }
   mpv::qt::set_property(m_mpv, "hwdec", hwdecMode);
-  mpv::qt::set_property(m_mpv, "videotoolbox-format", hwdecVTFormat);
+  mpv::qt::set_property(m_mpv, "hwdec-image-format", hwdecVTFormat);
 
   QVariant deinterlace = SettingsComponent::Get().value(SETTINGS_SECTION_VIDEO, "deinterlace");
   mpv::qt::set_property(m_mpv, "deinterlace", deinterlace.toBool() ? "yes" : "no");
 
 #ifndef TARGET_RPI
   double displayFps = DisplayComponent::Get().currentRefreshRate();
-  mpv::qt::set_property(m_mpv, "display-fps", displayFps);
+  mpv::qt::set_property(m_mpv, "display-fps-override", displayFps);
 #endif
 
   setAudioDelay(m_playbackAudioDelay);
 
   QVariant cache = SettingsComponent::Get().value(SETTINGS_SECTION_VIDEO, "cache");
-  mpv::qt::set_property(m_mpv, "cache", cache.toInt() * 1024);
+  mpv::qt::set_property(m_mpv, "demuxer-max-bytes", cache.toInt() * 1024 * 1024);
 
   updateVideoAspectSettings();
 }
@@ -1546,7 +1548,7 @@ QString PlayerComponent::videoInformation() const
                    << MPV_PROPERTY("video-params/dh") << "\n";
   info << "FPS (container): " << MPV_PROPERTY("container-fps") << "\n";
   info << "FPS (filters): " << MPV_PROPERTY("estimated-vf-fps") << "\n";
-  info << "Aspect: " << MPV_PROPERTY("video-aspect") << "\n";
+  info << "Aspect: " << MPV_PROPERTY("video-params/aspect") << "\n";
   info << "Bitrate: " << MPV_PROPERTY("video-bitrate") << "\n";
   double displayFps = DisplayComponent::Get().currentRefreshRate();
   info << "Display FPS: " << MPV_PROPERTY("display-fps")
